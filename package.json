@@ -33,7 +33,7 @@
     "@nestjs/swagger": "^7.1.13",
     "@node-redis/json": "^1.0.2",
     "@safe-global/safe-deployments": "^1.27.0",
-    "@types/lodash": "^4.14.199",
+    "@types/lodash": "^4.14.200",
     "ajv": "^8.12.0",
     "ajv-formats": "^2.1.1",
     "axios": "^1.5.0",
