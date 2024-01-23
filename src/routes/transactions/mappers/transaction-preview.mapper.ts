@@ -8,6 +8,7 @@ import { PreviewTransactionDto } from '@/routes/transactions/entities/preview-tr
 import { TransactionPreview } from '@/routes/transactions/entities/transaction-preview.entity';
 import { TransactionDataMapper } from '@/routes/transactions/mappers/common/transaction-data.mapper';
 import { MultisigTransactionInfoMapper } from '@/routes/transactions/mappers/common/transaction-info.mapper';
+import { DataDecoded } from '@/domain/data-decoder/entities/data-decoded.entity';
 
 @Injectable()
 export class TransactionPreviewMapper {
@@ -25,7 +26,7 @@ export class TransactionPreviewMapper {
     safe: Safe,
     previewTransactionDto: PreviewTransactionDto,
   ): Promise<TransactionPreview> {
-    let dataDecoded;
+    let dataDecoded: DataDecoded | null = null;
     try {
       if (previewTransactionDto.data !== null) {
         dataDecoded = await this.dataDecodedRepository.getDataDecoded({
@@ -38,18 +39,18 @@ export class TransactionPreviewMapper {
       this.loggingService.info(
         `Error trying to decode the input data: ${error.message}`,
       );
-      dataDecoded = previewTransactionDto.data;
     }
     const txInfo = await this.transactionInfoMapper.mapTransactionInfo(
       chainId,
-      <MultisigTransaction>{
+      {
         safe: safe.address,
         to: previewTransactionDto.to,
         value: previewTransactionDto.value,
         dataDecoded,
         data: previewTransactionDto.data,
         operation: previewTransactionDto.operation,
-      },
+        // Keep type safety as only the above are available in previewTransactionDto
+      } as MultisigTransaction,
     );
     const txData = await this.transactionDataMapper.mapTransactionData(
       chainId,
