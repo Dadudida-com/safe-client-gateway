@@ -18,6 +18,50 @@ export default () => ({
   auth: {
     token: process.env.AUTH_TOKEN,
   },
+  balances: {
+    balancesTtlSeconds: parseInt(process.env.BALANCES_TTL_SECONDS ?? `${300}`),
+    providers: {
+      zerion: {
+        baseUri: process.env.ZERION_BASE_URI || 'https://api.zerion.io',
+        apiKey: process.env.ZERION_API_KEY,
+        chains: {
+          1: { chainName: 'ethereum' },
+          10: { chainName: 'optimism' },
+          56: { chainName: 'binance-smart-chain' },
+          100: { chainName: 'xdai' },
+          137: { chainName: 'polygon' },
+          324: { chainName: 'zksync-era' },
+          // 1101 (Polygon zkEVM) is not available on Zerion
+          // 1101: { chainName: '' },
+          8453: { chainName: 'base' },
+          42161: { chainName: 'arbitrum' },
+          42220: { chainName: 'celo' },
+          43114: { chainName: 'avalanche' },
+          // 11155111 (Sepolia) is not available on Zerion
+          // 11155111: { chainName: '' },
+          1313161554: { chainName: 'aurora' },
+        },
+        currencies: [
+          'usd',
+          'eur',
+          'eth',
+          'aud',
+          'btc',
+          'cad',
+          'chf',
+          'cny',
+          'gbp',
+          'inr',
+          'jpy',
+          'krw',
+          'nzd',
+          'rub',
+          'try',
+          'zar',
+        ],
+      },
+    },
+  },
   db: {
     postgres: {
       host: process.env.POSTGRES_HOST || 'localhost',
@@ -25,6 +69,15 @@ export default () => ({
       database: process.env.POSTGRES_DB || 'safe-client-gateway',
       username: process.env.POSTGRES_USER || 'postgres',
       password: process.env.POSTGRES_PASSWORD || 'postgres',
+      ssl: {
+        enabled: process.env.POSTGRES_SSL_ENABLED?.toLowerCase() === 'true',
+        // If the value is not explicitly set to false, default should be true
+        // If not false the server will reject any connection which is not authorized with the list of supplied CAs
+        // https://nodejs.org/docs/latest-v20.x/api/tls.html#tlscreateserveroptions-secureconnectionlistener
+        rejectUnauthorized:
+          process.env.POSTGRES_SSL_REJECT_UNAUTHORIZED?.toLowerCase() !==
+          'false',
+      },
     },
   },
   email: {
@@ -72,7 +125,9 @@ export default () => ({
   features: {
     richFragments: process.env.FF_RICH_FRAGMENTS?.toLowerCase() === 'true',
     email: process.env.FF_EMAIL?.toLowerCase() === 'true',
-    trustedTokens: process.env.FF_TRUSTED_TOKENS?.toLowerCase() === 'true',
+    zerionBalancesChainIds:
+      process.env.FF_ZERION_BALANCES_CHAIN_IDS?.split(',') ?? [],
+    relay: process.env.FF_RELAY?.toLowerCase() === 'true',
   },
   httpClient: {
     // Timeout in milliseconds to be used for the HTTP client.
@@ -117,6 +172,7 @@ export default () => ({
       56: { nativeCoin: 'binancecoin', chainName: 'binance-smart-chain' },
       8453: { nativeCoin: 'ethereum', chainName: 'base' },
       84531: { nativeCoin: 'ethereum', chainName: 'base' },
+      84532: { nativeCoin: 'ethereum', chainName: 'base' },
     },
   },
   redis: {
@@ -124,7 +180,12 @@ export default () => ({
     port: process.env.REDIS_PORT || '6379',
   },
   relay: {
+    baseUri:
+      process.env.RELAY_PROVIDER_API_BASE_URI || 'https://api.gelato.digital',
     limit: parseInt(process.env.RELAY_THROTTLE_LIMIT ?? `${5}`),
+    apiKey: {
+      100: process.env.GELATO_API_KEY_GNOSIS_CHAIN,
+    },
   },
   safeConfig: {
     baseUri:

@@ -5,8 +5,7 @@ import { ICacheService } from '@/datasources/cache/cache.service.interface';
 import { HttpErrorFactory } from '@/datasources/errors/http-error-factory';
 import { INetworkService } from '@/datasources/network/network.service.interface';
 import { Backbone } from '@/domain/backbone/entities/backbone.entity';
-import { MasterCopy } from '@/domain/chains/entities/master-copies.entity';
-import { Collectible } from '@/domain/collectibles/entities/collectible.entity';
+import { Singleton } from '@/domain/chains/entities/singleton.entity';
 import { Contract } from '@/domain/contracts/entities/contract.entity';
 import { DataDecoded } from '@/domain/data-decoder/entities/data-decoded.entity';
 import { Delegate } from '@/domain/delegate/entities/delegate.entity';
@@ -26,7 +25,6 @@ import { Transfer } from '@/domain/safe/entities/transfer.entity';
 import { Token } from '@/domain/tokens/entities/token.entity';
 import { AddConfirmationDto } from '@/domain/transactions/entities/add-confirmation.dto.entity';
 import { ProposeTransactionDto } from '@/domain/transactions/entities/propose-transaction.dto.entity';
-import { Balance } from '@/domain/balances/entities/balance.entity';
 
 export class TransactionApi implements ITransactionApi {
   private readonly defaultExpirationTimeInSeconds: number;
@@ -61,96 +59,23 @@ export class TransactionApi implements ITransactionApi {
       );
   }
 
-  async getBalances(args: {
-    safeAddress: string;
-    trusted?: boolean;
-    excludeSpam?: boolean;
-  }): Promise<Balance[]> {
-    try {
-      const cacheDir = CacheRouter.getBalancesCacheDir({
-        chainId: this.chainId,
-        ...args,
-      });
-      const url = `${this.baseUrl}/api/v1/safes/${args.safeAddress}/balances/`;
-      return await this.dataSource.get({
-        cacheDir,
-        url,
-        notFoundExpireTimeSeconds: this.defaultNotFoundExpirationTimeSeconds,
-        networkRequest: {
-          params: {
-            trusted: args.trusted,
-            exclude_spam: args.excludeSpam,
-          },
-        },
-        expireTimeSeconds: this.defaultExpirationTimeInSeconds,
-      });
-    } catch (error) {
-      throw this.httpErrorFactory.from(error);
-    }
-  }
-
-  async clearLocalBalances(safeAddress: string): Promise<void> {
-    const key = CacheRouter.getBalancesCacheKey({
-      chainId: this.chainId,
-      safeAddress,
-    });
-    await this.cacheService.deleteByKey(key);
-  }
-
   async getDataDecoded(args: {
     data: string;
     to?: string;
   }): Promise<DataDecoded> {
     try {
       const url = `${this.baseUrl}/api/v1/data-decoder/`;
-      const { data: dataDecoded } = await this.networkService.post(url, {
-        data: args.data,
-        to: args.to,
-      });
+      const { data: dataDecoded } = await this.networkService.post<DataDecoded>(
+        url,
+        {
+          data: args.data,
+          to: args.to,
+        },
+      );
       return dataDecoded;
     } catch (error) {
       throw this.httpErrorFactory.from(error);
     }
-  }
-
-  async getCollectibles(args: {
-    safeAddress: string;
-    limit?: number;
-    offset?: number;
-    trusted?: boolean;
-    excludeSpam?: boolean;
-  }): Promise<Page<Collectible>> {
-    try {
-      const cacheDir = CacheRouter.getCollectiblesCacheDir({
-        chainId: this.chainId,
-        ...args,
-      });
-      const url = `${this.baseUrl}/api/v2/safes/${args.safeAddress}/collectibles/`;
-      return await this.dataSource.get({
-        cacheDir,
-        url,
-        notFoundExpireTimeSeconds: this.defaultNotFoundExpirationTimeSeconds,
-        networkRequest: {
-          params: {
-            limit: args.limit,
-            offset: args.offset,
-            trusted: args.trusted,
-            exclude_spam: args.excludeSpam,
-          },
-        },
-        expireTimeSeconds: this.defaultExpirationTimeInSeconds,
-      });
-    } catch (error) {
-      throw this.httpErrorFactory.from(error);
-    }
-  }
-
-  async clearCollectibles(safeAddress: string): Promise<void> {
-    const key = CacheRouter.getCollectiblesKey({
-      chainId: this.chainId,
-      safeAddress,
-    });
-    await this.cacheService.deleteByKey(key);
   }
 
   // Important: there is no hook which invalidates this endpoint,
@@ -172,10 +97,10 @@ export class TransactionApi implements ITransactionApi {
 
   // Important: there is no hook which invalidates this endpoint,
   // Therefore, this data will live in cache until [defaultExpirationTimeInSeconds]
-  async getMasterCopies(): Promise<MasterCopy[]> {
+  async getSingletons(): Promise<Singleton[]> {
     try {
-      const cacheDir = CacheRouter.getMasterCopiesCacheDir(this.chainId);
-      const url = `${this.baseUrl}/api/v1/about/master-copies/`;
+      const cacheDir = CacheRouter.getSingletonsCacheDir(this.chainId);
+      const url = `${this.baseUrl}/api/v1/about/singletons/`;
       return await this.dataSource.get({
         cacheDir,
         url,
@@ -445,7 +370,7 @@ export class TransactionApi implements ITransactionApi {
   async getSafesByModule(moduleAddress: string): Promise<SafeList> {
     try {
       const url = `${this.baseUrl}/api/v1/modules/${moduleAddress}/safes/`;
-      const { data } = await this.networkService.get(url);
+      const { data } = await this.networkService.get<SafeList>(url);
       return data;
     } catch (error) {
       throw this.httpErrorFactory.from(error);
@@ -583,6 +508,20 @@ export class TransactionApi implements ITransactionApi {
         url,
         notFoundExpireTimeSeconds: this.defaultNotFoundExpirationTimeSeconds,
         expireTimeSeconds: this.defaultExpirationTimeInSeconds,
+      });
+    } catch (error) {
+      throw this.httpErrorFactory.from(error);
+    }
+  }
+
+  async deleteTransaction(args: {
+    safeTxHash: string;
+    signature: string;
+  }): Promise<void> {
+    try {
+      const url = `${this.baseUrl}/api/v1/transactions/${args.safeTxHash}`;
+      await this.networkService.delete(url, {
+        signature: args.signature,
       });
     } catch (error) {
       throw this.httpErrorFactory.from(error);
@@ -781,12 +720,15 @@ export class TransactionApi implements ITransactionApi {
   }): Promise<Estimation> {
     try {
       const url = `${this.baseUrl}/api/v1/safes/${args.address}/multisig-transactions/estimations/`;
-      const { data: estimation } = await this.networkService.post(url, {
-        to: args.getEstimationDto.to,
-        value: args.getEstimationDto.value,
-        data: args.getEstimationDto.data,
-        operation: args.getEstimationDto.operation,
-      });
+      const { data: estimation } = await this.networkService.post<Estimation>(
+        url,
+        {
+          to: args.getEstimationDto.to,
+          value: args.getEstimationDto.value,
+          data: args.getEstimationDto.data,
+          operation: args.getEstimationDto.operation,
+        },
+      );
       return estimation;
     } catch (error) {
       throw this.httpErrorFactory.from(error);
@@ -874,7 +816,7 @@ export class TransactionApi implements ITransactionApi {
   }): Promise<Message> {
     try {
       const url = `${this.baseUrl}/api/v1/safes/${args.safeAddress}/messages/`;
-      const { data } = await this.networkService.post(url, {
+      const { data } = await this.networkService.post<Message>(url, {
         message: args.message,
         safeAppId: args.safeAppId,
         signature: args.signature,

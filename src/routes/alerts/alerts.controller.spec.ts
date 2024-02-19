@@ -18,10 +18,10 @@ import {
 } from '@/routes/alerts/entities/__tests__/alerts.builder';
 import { IConfigurationService } from '@/config/configuration.service.interface';
 import { Alert, EventType } from '@/routes/alerts/entities/alert.dto.entity';
-import { EmailDataSourceModule } from '@/datasources/email/email.datasource.module';
-import { TestEmailDatasourceModule } from '@/datasources/email/__tests__/test.email.datasource.module';
+import { AccountDataSourceModule } from '@/datasources/account/account.datasource.module';
+import { TestAccountDataSourceModule } from '@/datasources/account/__tests__/test.account.datasource.module';
 import { IEmailApi } from '@/domain/interfaces/email-api.interface';
-import { IEmailDataSource } from '@/domain/interfaces/email.datasource.interface';
+import { IAccountDataSource } from '@/domain/interfaces/account.datasource.interface';
 import { EmailApiModule } from '@/datasources/email-api/email-api.module';
 import { TestEmailApiModule } from '@/datasources/email-api/__tests__/test.email-api.module';
 import { safeBuilder } from '@/domain/safe/entities/__tests__/safe.builder';
@@ -31,9 +31,12 @@ import {
   execTransactionEncoder,
   removeOwnerEncoder,
   swapOwnerEncoder,
-} from '@/domain/alerts/__tests__/safe-transactions.encoder';
-import { transactionAddedEventBuilder } from '@/domain/alerts/__tests__/delay-modifier.encoder';
-import { NetworkService } from '@/datasources/network/network.service.interface';
+} from '@/domain/contracts/contracts/__tests__/safe-encoder.builder';
+import { transactionAddedEventBuilder } from '@/domain/alerts/contracts/__tests__/delay-modifier-encoder.builder';
+import {
+  INetworkService,
+  NetworkService,
+} from '@/datasources/network/network.service.interface';
 import { chainBuilder } from '@/domain/chains/entities/__tests__/chain.builder';
 import { TestAppProvider } from '@/__tests__/test-app.provider';
 import { getAddress } from 'viem';
@@ -41,8 +44,11 @@ import { getMultiSendCallOnlyDeployment } from '@safe-global/safe-deployments';
 import {
   multiSendEncoder,
   multiSendTransactionsEncoder,
-} from '@/domain/alerts/__tests__/multi-send-transactions.encoder';
+} from '@/domain/contracts/contracts/__tests__/multi-send-encoder.builder';
 import { UrlGeneratorHelper } from '@/domain/alerts/urls/url-generator.helper';
+import { accountBuilder } from '@/domain/account/entities/__tests__/account.builder';
+import { EmailAddress } from '@/domain/account/entities/account.entity';
+import { subscriptionBuilder } from '@/domain/account/entities/__tests__/subscription.builder';
 
 // The `x-tenderly-signature` header contains a cryptographic signature. The webhook request signature is
 // a HMAC SHA256 hash of concatenated signing secret, request payload, and timestamp, in this order.
@@ -67,19 +73,23 @@ function fakeTenderlySignature(args: {
 }
 
 describe('Alerts (Unit)', () => {
-  let configurationService;
-  let emailApi;
-  let emailDataSource;
-  let urlGenerator;
+  let configurationService: jest.MockedObjectDeep<IConfigurationService>;
+  let emailApi: jest.MockedObjectDeep<IEmailApi>;
+  let accountDataSource: jest.MockedObjectDeep<IAccountDataSource>;
+  let urlGenerator: UrlGeneratorHelper;
+
+  const accountRecoverySubscription = subscriptionBuilder()
+    .with('key', 'account_recovery')
+    .build();
 
   describe('/alerts route enabled', () => {
     let app: INestApplication;
     let signingKey: string;
-    let networkService;
-    let safeConfigUrl;
+    let networkService: jest.MockedObjectDeep<INetworkService>;
+    let safeConfigUrl: string | undefined;
 
     beforeEach(async () => {
-      jest.clearAllMocks();
+      jest.resetAllMocks();
 
       const defaultConfiguration = configuration();
       const testConfiguration = (): typeof defaultConfiguration => ({
@@ -93,8 +103,8 @@ describe('Alerts (Unit)', () => {
       const moduleFixture: TestingModule = await Test.createTestingModule({
         imports: [AppModule.register(testConfiguration)],
       })
-        .overrideModule(EmailDataSourceModule)
-        .useModule(TestEmailDatasourceModule)
+        .overrideModule(AccountDataSourceModule)
+        .useModule(TestAccountDataSourceModule)
         .overrideModule(CacheModule)
         .useModule(TestCacheModule)
         .overrideModule(RequestScopedLoggingModule)
@@ -110,7 +120,7 @@ describe('Alerts (Unit)', () => {
       signingKey = configurationService.getOrThrow('alerts.signingKey');
       emailApi = moduleFixture.get(IEmailApi);
       urlGenerator = moduleFixture.get(UrlGeneratorHelper);
-      emailDataSource = moduleFixture.get(IEmailDataSource);
+      accountDataSource = moduleFixture.get(IAccountDataSource);
       networkService = moduleFixture.get(NetworkService);
 
       app = await new TestAppProvider().provide(moduleFixture);
@@ -175,19 +185,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          subscriptionBuilder().with('key', 'account_recovery').build(),
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -201,8 +220,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -276,19 +295,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -302,8 +330,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -376,19 +404,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -402,8 +439,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -466,19 +503,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -492,8 +538,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -587,19 +633,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -613,8 +668,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -680,19 +735,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -706,8 +770,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(2);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -793,22 +857,32 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [
-          { email: faker.internet.email() },
-          { email: faker.internet.email() },
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
         ];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -822,8 +896,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -886,19 +960,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -912,8 +995,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -963,19 +1046,28 @@ describe('Alerts (Unit)', () => {
           alert,
           timestamp,
         });
-        const verifiedSignerEmails = [{ email: faker.internet.email() }];
-        emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-          verifiedSignerEmails,
-        );
+        const verifiedAccounts = [
+          accountBuilder()
+            .with('emailAddress', new EmailAddress(faker.internet.email()))
+            .with('isVerified', true)
+            .build(),
+        ];
+        accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+        accountDataSource.getSubscriptions.mockResolvedValue([
+          accountRecoverySubscription,
+        ]);
 
         networkService.get.mockImplementation((url) => {
           switch (url) {
             case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-              return Promise.resolve({ data: chain });
+              return Promise.resolve({ data: chain, status: 200 });
             case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-              return Promise.resolve({ data: { safes: [safe.address] } });
+              return Promise.resolve({
+                data: { safes: [safe.address] },
+                status: 200,
+              });
             case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-              return Promise.resolve({ data: safe });
+              return Promise.resolve({ data: safe, status: 200 });
             default:
               return Promise.reject(`No matching rule for url: ${url}`);
           }
@@ -989,8 +1081,8 @@ describe('Alerts (Unit)', () => {
           .expect(202)
           .expect({});
 
-        const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-          ({ email }) => email,
+        const expectedTargetEmailAddresses = verifiedAccounts.map(
+          ({ emailAddress }) => emailAddress.value,
         );
         expect(emailApi.createMessage).toHaveBeenCalledTimes(2);
         expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -1085,19 +1177,28 @@ describe('Alerts (Unit)', () => {
         alert,
         timestamp,
       });
-      const verifiedSignerEmails = [{ email: faker.internet.email() }];
-      emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-        verifiedSignerEmails,
-      );
+      const verifiedAccounts = [
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
+      ];
+      accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+      accountDataSource.getSubscriptions.mockResolvedValue([
+        accountRecoverySubscription,
+      ]);
 
       networkService.get.mockImplementation((url) => {
         switch (url) {
           case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-            return Promise.resolve({ data: chain });
+            return Promise.resolve({ data: chain, status: 200 });
           case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-            return Promise.resolve({ data: { safes: [safe.address] } });
+            return Promise.resolve({
+              data: { safes: [safe.address] },
+              status: 200,
+            });
           case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-            return Promise.resolve({ data: safe });
+            return Promise.resolve({ data: safe, status: 200 });
           default:
             return Promise.reject(`No matching rule for url: ${url}`);
         }
@@ -1111,8 +1212,8 @@ describe('Alerts (Unit)', () => {
         .expect(202)
         .expect({});
 
-      const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-        ({ email }) => email,
+      const expectedTargetEmailAddresses = verifiedAccounts.map(
+        ({ emailAddress }) => emailAddress.value,
       );
       expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
       expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -1192,19 +1293,28 @@ describe('Alerts (Unit)', () => {
         alert,
         timestamp,
       });
-      const verifiedSignerEmails = [{ email: faker.internet.email() }];
-      emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-        verifiedSignerEmails,
-      );
+      const verifiedAccounts = [
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
+      ];
+      accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+      accountDataSource.getSubscriptions.mockResolvedValue([
+        accountRecoverySubscription,
+      ]);
 
       networkService.get.mockImplementation((url) => {
         switch (url) {
           case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-            return Promise.resolve({ data: chain });
+            return Promise.resolve({ data: chain, status: 200 });
           case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-            return Promise.resolve({ data: { safes: [safe.address] } });
+            return Promise.resolve({
+              data: { safes: [safe.address] },
+              status: 200,
+            });
           case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-            return Promise.resolve({ data: safe });
+            return Promise.resolve({ data: safe, status: 200 });
           default:
             return Promise.reject(`No matching rule for url: ${url}`);
         }
@@ -1218,8 +1328,8 @@ describe('Alerts (Unit)', () => {
         .expect(202)
         .expect({});
 
-      const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-        ({ email }) => email,
+      const expectedTargetEmailAddresses = verifiedAccounts.map(
+        ({ emailAddress }) => emailAddress.value,
       );
       expect(emailApi.createMessage).toHaveBeenCalledTimes(2);
       expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -1286,22 +1396,32 @@ describe('Alerts (Unit)', () => {
         timestamp,
       });
       // Multiple emails
-      const verifiedSignerEmails = [
-        { email: faker.internet.email() },
-        { email: faker.internet.email() },
+      const verifiedAccounts = [
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
       ];
-      emailDataSource.getVerifiedAccountEmailsBySafeAddress.mockResolvedValue(
-        verifiedSignerEmails,
-      );
+      accountDataSource.getAccounts.mockResolvedValue(verifiedAccounts);
+      accountDataSource.getSubscriptions.mockResolvedValue([
+        accountRecoverySubscription,
+      ]);
 
       networkService.get.mockImplementation((url) => {
         switch (url) {
           case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
-            return Promise.resolve({ data: chain });
+            return Promise.resolve({ data: chain, status: 200 });
           case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
-            return Promise.resolve({ data: { safes: [safe.address] } });
+            return Promise.resolve({
+              data: { safes: [safe.address] },
+              status: 200,
+            });
           case `${chain.transactionService}/api/v1/safes/${safe.address}`:
-            return Promise.resolve({ data: safe });
+            return Promise.resolve({ data: safe, status: 200 });
           default:
             return Promise.reject(`No matching rule for url: ${url}`);
         }
@@ -1315,8 +1435,8 @@ describe('Alerts (Unit)', () => {
         .expect(202)
         .expect({});
 
-      const expectedTargetEmailAddresses = verifiedSignerEmails.map(
-        ({ email }) => email,
+      const expectedTargetEmailAddresses = verifiedAccounts.map(
+        ({ emailAddress }) => emailAddress.value,
       );
       expect(emailApi.createMessage).toHaveBeenCalledTimes(1);
       expect(emailApi.createMessage).toHaveBeenNthCalledWith(1, {
@@ -1340,6 +1460,80 @@ describe('Alerts (Unit)', () => {
         template: configurationService.getOrThrow('email.templates.recoveryTx'),
         to: expectedTargetEmailAddresses,
       });
+    });
+
+    it('does not notify accounts not subscribed to CATEGORY_ACCOUNT_RECOVERY', async () => {
+      const chain = chainBuilder().build();
+      const delayModifier = faker.finance.ethereumAddress();
+      const safe = safeBuilder().with('modules', [delayModifier]).build();
+      const addOwnerWithThreshold = addOwnerWithThresholdEncoder();
+      const transactionAddedEvent = transactionAddedEventBuilder()
+        .with('data', addOwnerWithThreshold.encode())
+        .with('to', getAddress(safe.address))
+        .encode();
+      const alert = alertBuilder()
+        .with(
+          'transaction',
+          alertTransactionBuilder()
+            .with('to', delayModifier)
+            .with('logs', [
+              alertLogBuilder()
+                .with('address', delayModifier)
+                .with('data', transactionAddedEvent.data)
+                .with('topics', transactionAddedEvent.topics)
+                .build(),
+            ])
+            .with('network', chain.chainId)
+            .build(),
+        )
+        .with('event_type', EventType.ALERT)
+        .build();
+      const timestamp = Date.now().toString();
+      const signature = fakeTenderlySignature({
+        signingKey,
+        alert,
+        timestamp,
+      });
+      const accounts = [
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
+        accountBuilder()
+          .with('emailAddress', new EmailAddress(faker.internet.email()))
+          .with('isVerified', true)
+          .build(),
+      ];
+      accountDataSource.getAccounts.mockResolvedValue(accounts);
+      accountDataSource.getSubscriptions.mockResolvedValue([
+        subscriptionBuilder().build(),
+      ]);
+
+      networkService.get.mockImplementation((url) => {
+        switch (url) {
+          case `${safeConfigUrl}/api/v1/chains/${chain.chainId}`:
+            return Promise.resolve({ data: chain, status: 200 });
+          case `${chain.transactionService}/api/v1/modules/${delayModifier}/safes/`:
+            return Promise.resolve({
+              data: { safes: [safe.address] },
+              status: 200,
+            });
+          case `${chain.transactionService}/api/v1/safes/${safe.address}`:
+            return Promise.resolve({ data: safe, status: 200 });
+          default:
+            return Promise.reject(`No matching rule for url: ${url}`);
+        }
+      });
+
+      await request(app.getHttpServer())
+        .post('/v1/alerts')
+        .set('x-tenderly-signature', signature)
+        .set('date', timestamp)
+        .send(alert)
+        .expect(202)
+        .expect({});
+
+      expect(emailApi.createMessage).toHaveBeenCalledTimes(0);
     });
 
     it('returns 400 (Bad Request) for valid signature/invalid payload', async () => {
@@ -1378,7 +1572,7 @@ describe('Alerts (Unit)', () => {
     let signingKey: string;
 
     beforeEach(async () => {
-      jest.clearAllMocks();
+      jest.resetAllMocks();
 
       const defaultConfiguration = configuration();
       const testConfiguration = (): typeof defaultConfiguration => ({
@@ -1392,8 +1586,8 @@ describe('Alerts (Unit)', () => {
       const moduleFixture: TestingModule = await Test.createTestingModule({
         imports: [AppModule.register(testConfiguration)],
       })
-        .overrideModule(EmailDataSourceModule)
-        .useModule(TestEmailDatasourceModule)
+        .overrideModule(AccountDataSourceModule)
+        .useModule(TestAccountDataSourceModule)
         .overrideModule(CacheModule)
         .useModule(TestCacheModule)
         .overrideModule(RequestScopedLoggingModule)

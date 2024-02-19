@@ -1,7 +1,5 @@
 import { Backbone } from '@/domain/backbone/entities/backbone.entity';
-import { Balance } from '@/domain/balances/entities/balance.entity';
-import { MasterCopy } from '@/domain/chains/entities/master-copies.entity';
-import { Collectible } from '@/domain/collectibles/entities/collectible.entity';
+import { Singleton } from '@/domain/chains/entities/singleton.entity';
 import { Contract } from '@/domain/contracts/entities/contract.entity';
 import { DataDecoded } from '@/domain/data-decoder/entities/data-decoded.entity';
 import { Delegate } from '@/domain/delegate/entities/delegate.entity';
@@ -22,29 +20,11 @@ import { AddConfirmationDto } from '@/domain/transactions/entities/add-confirmat
 import { ProposeTransactionDto } from '@/domain/transactions/entities/propose-transaction.dto.entity';
 
 export interface ITransactionApi {
-  getBalances(args: {
-    safeAddress: string;
-    trusted?: boolean;
-    excludeSpam?: boolean;
-  }): Promise<Balance[]>;
-
-  clearLocalBalances(safeAddress: string): Promise<void>;
-
   getDataDecoded(args: { data: string; to?: string }): Promise<DataDecoded>;
-
-  getCollectibles(args: {
-    safeAddress: string;
-    limit?: number;
-    offset?: number;
-    trusted?: boolean;
-    excludeSpam?: boolean;
-  }): Promise<Page<Collectible>>;
-
-  clearCollectibles(safeAddress: string): Promise<void>;
 
   getBackbone(): Promise<Backbone>;
 
-  getMasterCopies(): Promise<MasterCopy[]>;
+  getSingletons(): Promise<Singleton[]>;
 
   getSafe(safeAddress: string): Promise<Safe>;
 
@@ -128,6 +108,11 @@ export interface ITransactionApi {
   getMultisigTransaction(
     safeTransactionHash: string,
   ): Promise<MultisigTransaction>;
+
+  deleteTransaction(args: {
+    safeTxHash: string;
+    signature: string;
+  }): Promise<void>;
 
   clearMultisigTransaction(safeTransactionHash: string): Promise<void>;
 

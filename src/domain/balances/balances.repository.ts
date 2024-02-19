@@ -8,10 +8,13 @@ import { IPricesRepository } from '@/domain/prices/prices.repository.interface';
 import { ILoggingService, LoggingService } from '@/logging/logging.interface';
 import { getNumberString } from '@/domain/common/utils/utils';
 import { AssetPrice } from '@/domain/prices/entities/asset-price.entity';
+import { IBalancesApiManager } from '@/domain/interfaces/balances-api.manager.interface';
 
 @Injectable()
 export class BalancesRepository implements IBalancesRepository {
   constructor(
+    @Inject(IBalancesApiManager)
+    private readonly balancesApiManager: IBalancesApiManager,
     @Inject(ITransactionApiManager)
     private readonly transactionApiManager: ITransactionApiManager,
     @Inject(IConfigurationService)
@@ -29,8 +32,45 @@ export class BalancesRepository implements IBalancesRepository {
     trusted?: boolean;
     excludeSpam?: boolean;
   }): Promise<Balance[]> {
+    // TODO: route TransactionApi balances retrieval from BalancesApiManager
+    return this.balancesApiManager.useExternalApi(args.chainId)
+      ? this._getBalancesFromBalancesApi(args)
+      : this._getBalancesFromTransactionApi(args);
+  }
+
+  async clearBalances(args: {
+    chainId: string;
+    safeAddress: string;
+  }): Promise<void> {
+    const api = await this.balancesApiManager.getBalancesApi(args.chainId);
+    await api.clearBalances(args);
+  }
+
+  getFiatCodes(): string[] {
+    return this.balancesApiManager.getFiatCodes();
+  }
+
+  private async _getBalancesFromBalancesApi(args: {
+    chainId: string;
+    safeAddress: string;
+    fiatCode: string;
+    trusted?: boolean;
+    excludeSpam?: boolean;
+  }): Promise<Balance[]> {
+    const api = await this.balancesApiManager.getBalancesApi(args.chainId);
+    const balances = await api.getBalances(args);
+    return balances.map((balance) => this.balancesValidator.validate(balance));
+  }
+
+  private async _getBalancesFromTransactionApi(args: {
+    chainId: string;
+    safeAddress: string;
+    fiatCode: string;
+    trusted?: boolean;
+    excludeSpam?: boolean;
+  }): Promise<Balance[]> {
     const { chainId, safeAddress, fiatCode, trusted, excludeSpam } = args;
-    const api = await this.transactionApiManager.getTransactionApi(chainId);
+    const api = await this.balancesApiManager.getBalancesApi(chainId);
     const balances = await api.getBalances({
       safeAddress,
       trusted,
@@ -64,16 +104,6 @@ export class BalancesRepository implements IBalancesRepository {
         };
       }),
     );
-  }
-
-  async clearLocalBalances(args: {
-    chainId: string;
-    safeAddress: string;
-  }): Promise<void> {
-    const api = await this.transactionApiManager.getTransactionApi(
-      args.chainId,
-    );
-    await api.clearLocalBalances(args.safeAddress);
   }
 
   private async _getNativeCoinPrice(
